@@ -1,0 +1,109 @@
+# AI Keiri Agent - Phase 1 Graph Definition
+# Workflow: Sales Credit Reconciliation (Fixed Flow)
+
+graph_name: "sales_credit_reconciliation_v1"
+description: "銀行の入金明細と社内の請求データを突合し、売上債権の消込リストと未消込リストを生成する固定フローグラフ。"
+version: "1.0"
+
+# グラフ全体で管理・受け渡しされるデータ構造を定義
+state:
+  description: "グラフの実行中に各ノード間で共有される状態オブジェクト。"
+  schema:
+    input_files:
+      type: "dict"
+      description: "ユーザーから受け取る入力ファイルのパス情報。例: {deposit: 'path/to/deposit.csv', billing: 'path/to/billing.xlsx'}"
+    raw_deposit_data:
+      type: "list[dict]"
+      description: "csv_readerツールで読み込まれた入金明細の生データ。"
+    raw_billing_data:
+      type: "list[dict]"
+      description: "excel_readerツールで読み込まれた請求データの生データ。"
+    matching_results:
+      type: "dict"
+      description: "key_based_matcherツールの実行結果。{matched_pairs: [], unmatched_deposit: [], unmatched_billing: []} の形式。"
+    reconciled_list:
+      type: "list[dict]"
+      description: "最終的に消込完了と判断されたデータのリスト。"
+    unreconciled_list:
+      type: "list[dict]"
+      description: "最終的に消込不能と判断されたデータのリスト。"
+    final_output_paths:
+      type: "dict"
+      description: "生成された出力ファイルのパス情報。例: {reconciled: 'path/to/reconciled.csv', unreconciled: 'path/to/unreconciled.csv'}"
+
+# グラフを構成する各処理ノードを定義
+nodes:
+  - name: "read_deposit_file"
+    description: "入金明細ファイル（CSV）を読み込むノード。"
+    tool_used: "csv_reader"
+    inputs_from_state:
+      - "state.input_files.deposit"
+    outputs_to_state:
+      - "state.raw_deposit_data"
+
+  - name: "read_billing_file"
+    description: "請求データファイル（Excel）を読み込むノード。"
+    tool_used: "excel_reader"
+    inputs_from_state:
+      - "state.input_files.billing"
+    outputs_to_state:
+      - "state.raw_billing_data"
+
+  - name: "match_data_by_key"
+    description: "入金データと請求データを『請求番号』キーで突合するノード。"
+    tool_used: "key_based_matcher"
+    inputs_from_state:
+      - "state.raw_deposit_data"
+      - "state.raw_billing_data"
+    outputs_to_state:
+      - "state.matching_results"
+
+  - name: "validate_and_sort_matches"
+    description: "突合成功ペアの金額差額を検証し、全データを『消込完了』と『消込不能』に最終的に振り分けるノード。"
+    tool_used: "difference_validator" # このノード内でループ実行される
+    inputs_from_state:
+      - "state.matching_results"
+    outputs_to_state:
+      - "state.reconciled_list"
+      - "state.unreconciled_list"
+
+  - name: "write_reconciled_csv"
+    description: "消込完了リストをCSVファイルとして書き出すノード。"
+    tool_used: "csv_writer"
+    inputs_from_state:
+      - "state.reconciled_list"
+    outputs_to_state:
+      - "state.final_output_paths.reconciled"
+
+  - name: "write_unreconciled_csv"
+    description: "消込不能リストをCSVファイルとして書き出すノード。"
+    tool_used: "csv_writer"
+    inputs_from_state:
+      - "state.unreconciled_list"
+    outputs_to_state:
+      - "state.final_output_paths.unreconciled"
+
+# ノード間の処理の流れ（エッジ）を定義
+# フェーズ1では、この順序で固定的に実行される
+edges:
+  - from: "__start__"
+    to: "read_deposit_file"
+    condition: "always"
+  - from: "read_deposit_file"
+    to: "read_billing_file"
+    condition: "always"
+  - from: "read_billing_file"
+    to: "match_data_by_key"
+    condition: "always"
+  - from: "match_data_by_key"
+    to: "validate_and_sort_matches"
+    condition: "always"
+  - from: "validate_and_sort_matches"
+    to: "write_reconciled_csv"
+    condition: "always"
+  - from: "write_reconciled_csv"
+    to: "write_unreconciled_csv"
+    condition: "always"
+  - from: "write_unreconciled_csv"
+    to: "__end__"
+    condition: "always"
