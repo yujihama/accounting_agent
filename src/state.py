@@ -34,4 +34,8 @@ class AppState(TypedDict, total=False):
     suggested_queue: List[str]
 
     # 実行済みツール
-    _executed_tools: List[str] 
+    _executed_tools: List[str]
+
+    # 専門家エージェント呼び出し
+    next_agent: str
+    agent_parameters: Dict[str, Any] 

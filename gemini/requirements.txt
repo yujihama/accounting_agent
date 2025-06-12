@@ -1,7 +1,0 @@
-langgraph
-pandas
-openpyxl
-openai
-langchain-core
-langchain-openai
-python-dotenv 

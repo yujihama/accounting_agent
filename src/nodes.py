@@ -14,6 +14,10 @@ from .tools.human_validator import human_validator
 from langchain_openai import ChatOpenAI  # type: ignore
 from .tools.instruction_tool_suggester import suggest_tools  # 推奨ツール生成
 from .tools.instruction_parser import parse_instruction_file  # ローカル import
+from .agents.inventory_matching_agent import inventory_matching_agent as _inventory_agent
+from langchain.output_parsers import PydanticOutputParser  # NEW
+from pydantic import BaseModel, Field  # NEW
+from .agents.receivables_reconciliation_agent import receivables_reconciliation_agent as _receivables_agent
 
 
 # -----------------------------
@@ -142,6 +146,9 @@ def read_instruction_file(state: AppState) -> AppState:
         "write_reconciled_csv",
         "write_unreconciled_csv",
         "human_validator",
+        "inventory_matching_agent",
+        "receivables_reconciliation_agent",
+        "accounting_reconciliation_agent",
         "__end__",
     ]
     suggested = suggest_tools(tasks, tool_list_full)
@@ -161,6 +168,45 @@ def planner(state: AppState) -> AppState:
 
     # 既に決定済みの場合（前回 human_validator などで戻ってきたケース）はスキップ
     if state.get("plan_next") == "__end__":
+        return state
+
+    # -------------------------------------------------------------
+    # 1. LLM + PydanticOutputParser によるパラメータ抽出
+    # -------------------------------------------------------------
+    if "instruction_tasks" in state and not state.get("next_agent"):
+        class PlannerExtraction(BaseModel):
+            """LLM から返される構造化パラメータスキーマ"""
+            next_agent: str = Field(..., description="呼び出すべき専門家エージェント名")
+            agent_parameters: Dict[str, Any] = Field(default_factory=dict, description="エージェントへ渡すパラメータ")
+
+        parser = PydanticOutputParser(pydantic_object=PlannerExtraction)
+
+        extraction_prompt = (
+            "あなたは監督エージェントです。以下のタスク記述を読み取り、呼び出すべき専門家エージェントとそのパラメータを JSON で出力してください。\n"
+            f"{parser.get_format_instructions()}\n\n"
+            "# タスク一覧\n" + "\n".join(state["instruction_tasks"])
+        )
+
+        try:
+            llm_extract = ChatOpenAI(model_name="gpt-4.1-mini", temperature=0.0, max_tokens=512)
+            extraction_resp = llm_extract.invoke([
+                {"role": "system", "content": "You are an expert accounting planner."},
+                {"role": "user", "content": extraction_prompt},
+            ])
+
+            raw_content = extraction_resp.content if hasattr(extraction_resp, "content") else extraction_resp
+            parsed: PlannerExtraction = parser.parse(raw_content)
+            state["next_agent"] = parsed.next_agent
+            state["agent_parameters"] = parsed.agent_parameters
+        except Exception as e:
+            # LLM 抽出に失敗した場合はログを出力し、次のロジックにフォールバック
+            print(f"[planner] parameter extraction failed: {e}")
+
+    # -------------------------------------------------------------
+    # 2. next_agent が設定されていればそれを優先
+    # -------------------------------------------------------------
+    if state.get("next_agent") and state.get("plan_next") not in ["__end__", state.get("next_agent")]:
+        state["plan_next"] = state["next_agent"]
         return state
 
     # OPENAI_API_KEY が設定されていなければ例外
@@ -190,6 +236,9 @@ def planner(state: AppState) -> AppState:
             "write_reconciled_csv",
             "write_unreconciled_csv",
             "human_validator",
+            "inventory_matching_agent",
+            "receivables_reconciliation_agent",
+            "accounting_reconciliation_agent",
             "__end__",
         ]
         # 進捗状況を分かりやすく表示
@@ -266,6 +315,7 @@ def planner(state: AppState) -> AppState:
             "final_output_paths" not in state or "unreconciled" not in state.get("final_output_paths", {})
         )
 
+    # 有効な次ノード一覧と前提条件
     valid_next = {
         "read_instruction_file": _needs_instruction,
         "read_deposit_file": _needs_deposit,
@@ -275,6 +325,9 @@ def planner(state: AppState) -> AppState:
         "write_reconciled_csv": _needs_write_reconciled,
         "write_unreconciled_csv": _needs_write_unreconciled,
         "human_validator": lambda: True,
+        "inventory_matching_agent": lambda: True,
+        "receivables_reconciliation_agent": lambda: True,
+        "accounting_reconciliation_agent": lambda: True,
         "__end__": lambda: not (
             _needs_deposit()
             or _needs_billing()
@@ -331,3 +384,19 @@ def ask_human_validation(state: AppState) -> AppState:
 
 def _mark_executed(state: AppState, node_name: str) -> None:
     state.setdefault("_executed_tools", []).append(node_name) 
+
+
+# --------------------------
+# 専門家エージェントノード
+# --------------------------
+
+def inventory_matching_agent_node(state: AppState) -> AppState:
+    print("---NODE: inventory_matching_agent---")
+    _mark_executed(state, "inventory_matching_agent")
+    return _inventory_agent(state)
+
+
+def receivables_reconciliation_agent_node(state: AppState) -> AppState:
+    print("---NODE: receivables_reconciliation_agent---")
+    _mark_executed(state, "receivables_reconciliation_agent")
+    return _receivables_agent(state) 
