@@ -19,9 +19,10 @@ def test_workflow_runs_with_real_llm(tmp_path):
     """実際の OpenAI API を用いてワークフローが最後まで完了することを検証する。"""
     deposit_path = PROJECT_ROOT / "sample" / "deposit_mismatch.csv"
     billing_path = PROJECT_ROOT / "sample" / "billing.xlsx"
+    instruction_path = PROJECT_ROOT / "doc" / "sample_instruction.md"
 
     # 実行
-    final_state = workflow.run_workflow(str(deposit_path), str(billing_path))
+    final_state = workflow.run_workflow(str(deposit_path), str(billing_path), str(instruction_path))
 
     # ワークフローが正常終了しているかを確認
     assert final_state.get("plan_next") == "__end__"
@@ -30,4 +31,7 @@ def test_workflow_runs_with_real_llm(tmp_path):
     outputs = final_state["final_output_paths"]
     for key in ("reconciled", "unreconciled"):
         out_path = PROJECT_ROOT / outputs[key]
-        assert out_path.exists(), f"出力ファイル {out_path} が存在しません" 
+        assert out_path.exists(), f"出力ファイル {out_path} が存在しません"
+
+    # 推奨ツールキューが state に含まれるか
+    assert "suggested_queue" in final_state and final_state["suggested_queue"], "推奨キューが生成されていません" 

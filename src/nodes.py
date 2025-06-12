@@ -12,6 +12,8 @@ from .tools.difference_validator import difference_validator
 from .tools.csv_writer import csv_writer
 from .tools.human_validator import human_validator
 from langchain_openai import ChatOpenAI  # type: ignore
+from .tools.instruction_tool_suggester import suggest_tools  # 推奨ツール生成
+from .tools.instruction_parser import parse_instruction_file  # ローカル import
 
 
 # -----------------------------
@@ -20,6 +22,7 @@ from langchain_openai import ChatOpenAI  # type: ignore
 
 def read_deposit_file(state: AppState) -> AppState:
     print("---NODE: read_deposit_file---")
+    _mark_executed(state, "read_deposit_file")
     file_path = state["input_files"]["deposit"]
     state["raw_deposit_data"] = csv_reader(file_path)
     return state
@@ -27,6 +30,7 @@ def read_deposit_file(state: AppState) -> AppState:
 
 def read_billing_file(state: AppState) -> AppState:
     print("---NODE: read_billing_file---")
+    _mark_executed(state, "read_billing_file")
     file_path = state["input_files"]["billing"]
     state["raw_billing_data"] = excel_reader(file_path)
     return state
@@ -34,6 +38,7 @@ def read_billing_file(state: AppState) -> AppState:
 
 def match_data_by_key(state: AppState) -> AppState:
     print("---NODE: match_data_by_key---")
+    _mark_executed(state, "match_data_by_key")
     # 自動でキー名を推定
     deposit_key, billing_key = infer_matching_keys(
         state["raw_deposit_data"], state["raw_billing_data"]
@@ -58,6 +63,7 @@ def match_data_by_key(state: AppState) -> AppState:
 
 def validate_and_sort_matches(state: AppState) -> AppState:
     print("---NODE: validate_and_sort_matches---")
+    _mark_executed(state, "validate_and_sort_matches")
     matched_pairs = state["matching_results"].get("matched_pairs", [])
 
     reconciled = []
@@ -94,6 +100,7 @@ def validate_and_sort_matches(state: AppState) -> AppState:
 
 def write_reconciled_csv(state: AppState) -> AppState:
     print("---NODE: write_reconciled_csv---")
+    _mark_executed(state, "write_reconciled_csv")
     output_path = "output/reconciled.csv"
     csv_writer(state.get("reconciled_list", []), output_path)
     state.setdefault("final_output_paths", {})["reconciled"] = output_path
@@ -102,9 +109,47 @@ def write_reconciled_csv(state: AppState) -> AppState:
 
 def write_unreconciled_csv(state: AppState) -> AppState:
     print("---NODE: write_unreconciled_csv---")
+    _mark_executed(state, "write_unreconciled_csv")
     output_path = "output/unreconciled.csv"
     csv_writer(state.get("unreconciled_list", []), output_path)
     state.setdefault("final_output_paths", {})["unreconciled"] = output_path
+    return state
+
+
+def read_instruction_file(state: AppState) -> AppState:
+    """作業指示書 (Markdown / txt) を読み込み、タスク一覧を state に格納する。"""
+    print("---NODE: read_instruction_file---")
+
+    instr_path = state.get("input_files", {}).get("instruction")
+    if not instr_path:
+        # 指示書が渡されていなければそのまま返す
+        return state
+
+    try:
+        tasks = parse_instruction_file(instr_path)
+        state["instruction_tasks"] = tasks
+    except Exception as e:
+        # パース失敗時は例外を伝播（planner でハンドリング可能）
+        raise RuntimeError(f"作業指示書の解析に失敗しました: {e}")
+
+    # 推奨ツールキューを生成して保存
+    tool_list_full = [
+        "read_instruction_file",
+        "read_deposit_file",
+        "read_billing_file",
+        "match_data_by_key",
+        "validate_and_sort_matches",
+        "write_reconciled_csv",
+        "write_unreconciled_csv",
+        "human_validator",
+        "__end__",
+    ]
+    suggested = suggest_tools(tasks, tool_list_full)
+    state["suggested_queue"] = suggested
+
+    # 実行履歴に追加
+    _mark_executed(state, "read_instruction_file")
+
     return state
 
 
@@ -137,6 +182,7 @@ def planner(state: AppState) -> AppState:
             "- 回答はツール名 1 語のみ。日本語や説明を付けないこと。"
         )
         tool_list = [
+            "read_instruction_file",
             "read_deposit_file",
             "read_billing_file",
             "match_data_by_key",
@@ -151,6 +197,7 @@ def planner(state: AppState) -> AppState:
             return "done" if cond else "not done"
 
         progress_lines = [
+            f"instruction 読込: {_flag('instruction_tasks' in state or 'instruction' not in state.get('input_files', {}))}",
             f"deposit_file 読込: {_flag('raw_deposit_data' in state)}",
             f"billing_file 読込: {_flag('raw_billing_data' in state)}",
             f"マッチング: {_flag('matching_results' in state)}",
@@ -159,9 +206,20 @@ def planner(state: AppState) -> AppState:
             f"unreconciled.csv 出力: {_flag('final_output_paths' in state and 'unreconciled' in state.get('final_output_paths', {}))}",
         ]
 
+        # suggested_queue の未実行分を準備
+        executed = state.get("_executed_tools", [])
+        suggested_remaining = [t for t in state.get("suggested_queue", []) if t not in executed]
+
+        suggested_block = ", ".join(suggested_remaining) if suggested_remaining else "(none)"
+
+        # instruction_tasks は冗長にならないよう最大 10 行まで
+        tasks_excerpt = state.get("instruction_tasks", [])[:10]
+
         user_prompt = (
             "利用可能なツール一覧:\n" + "\n".join(tool_list) + "\n\n"
-            "現在の進捗状況:\n" + "\n".join(progress_lines)
+            "現在の進捗状況:\n" + "\n".join(progress_lines) + "\n\n"
+            "推奨ツール (未実行, 順序どおり): " + suggested_block + "\n\n"
+            "指示書タスク抜粋:\n" + "\n".join(tasks_excerpt)
         )
         messages: List[dict] = [
             {"role": "system", "content": system_prompt},
@@ -179,6 +237,12 @@ def planner(state: AppState) -> AppState:
     # ------------------------------------------------------------------
     # 前提条件チェック（不適切なツール選択 & 早期終了の対策）
     # ------------------------------------------------------------------
+
+    def _needs_instruction() -> bool:
+        return (
+            'instruction' in state.get('input_files', {})
+            and 'instruction_tasks' not in state
+        )
 
     def _needs_deposit() -> bool:
         return "raw_deposit_data" not in state
@@ -203,6 +267,7 @@ def planner(state: AppState) -> AppState:
         )
 
     valid_next = {
+        "read_instruction_file": _needs_instruction,
         "read_deposit_file": _needs_deposit,
         "read_billing_file": _needs_billing,
         "match_data_by_key": _needs_match,
@@ -252,8 +317,17 @@ def planner(state: AppState) -> AppState:
 
 def ask_human_validation(state: AppState) -> AppState:
     print("---NODE: human_validator---")
+    _mark_executed(state, "human_validator")
     question = state.get("human_validation_question", "この処理を続行しますか？")
     answer = human_validator(question)
     state["human_validation_answer"] = answer
     # human_validator の結果をどう使うかは将来的にプランナー側で判断する
     return state 
+
+
+# ---------------------------------
+# 共通ヘルパー: 実行済みツールの記録
+# ---------------------------------
+
+def _mark_executed(state: AppState, node_name: str) -> None:
+    state.setdefault("_executed_tools", []).append(node_name) 

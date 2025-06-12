@@ -25,4 +25,13 @@ class AppState(TypedDict, total=False):
     plan_next: str
 
     # ヒューマンバリデータの結果
-    human_validation_answer: bool 
+    human_validation_answer: bool
+
+    # 作業指示書
+    instruction_tasks: List[str]
+
+    # 推奨ツールキュー
+    suggested_queue: List[str]
+
+    # 実行済みツール
+    _executed_tools: List[str] 

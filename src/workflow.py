@@ -26,6 +26,7 @@ from .nodes import (
     write_unreconciled_csv,
     planner,
     ask_human_validation,
+    read_instruction_file,
 )
 
 
@@ -38,6 +39,7 @@ def build_graph() -> Any:
     sg: StateGraph = StateGraph(AppState)
 
     # ノードを登録
+    sg.add_node("read_instruction_file", read_instruction_file)
     sg.add_node("planner", planner)
     sg.add_node("read_deposit_file", read_deposit_file)
     sg.add_node("read_billing_file", read_billing_file)
@@ -62,6 +64,7 @@ def build_graph() -> Any:
         "planner",
         _edge_selector,
         {
+            "read_instruction_file": "read_instruction_file",
             "read_deposit_file": "read_deposit_file",
             "read_billing_file": "read_billing_file",
             "match_data_by_key": "match_data_by_key",
@@ -85,6 +88,9 @@ def build_graph() -> Any:
     ]:
         sg.add_edge(node_name, "planner")
 
+    # read_instruction_file 完了後は planner へ戻す
+    sg.add_edge("read_instruction_file", "planner")
+
     return sg.compile()
 
 
@@ -92,7 +98,7 @@ def build_graph() -> Any:
 # CLI Entrypoint
 # -----------------------------
 
-def run_workflow(deposit_path: str, billing_path: str) -> Dict[str, Any]:
+def run_workflow(deposit_path: str, billing_path: str, instruction_path: str | None = None) -> Dict[str, Any]:
     """ワークフローを実行し、最終stateを返す。"""
     app = build_graph()
 
@@ -102,6 +108,9 @@ def run_workflow(deposit_path: str, billing_path: str) -> Dict[str, Any]:
             "billing": str(pathlib.Path(billing_path).resolve()),
         }
     }
+
+    if instruction_path:
+        initial_state["input_files"]["instruction"] = str(pathlib.Path(instruction_path).resolve())
 
     final_state: AppState = app.invoke(initial_state)
     return final_state
@@ -113,7 +122,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sales credit reconciliation workflow")
     parser.add_argument("--deposit", required=True, help="Deposit CSV file path")
     parser.add_argument("--billing", required=True, help="Billing Excel file path")
+    parser.add_argument("--instruction", help="Instruction markdown/text file path")
     args = parser.parse_args()
 
-    result_state = run_workflow(args.deposit, args.billing)
+    result_state = run_workflow(args.deposit, args.billing, args.instruction)
     print(json.dumps(result_state.get("final_output_paths", {}), ensure_ascii=False, indent=2)) 
