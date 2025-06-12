@@ -19,4 +19,10 @@ class AppState(TypedDict, total=False):
     unreconciled_list: List[Dict[str, Any]]
 
     # 出力ファイルパス
-    final_output_paths: Dict[str, str] 
+    final_output_paths: Dict[str, str]
+
+    # プランナー決定
+    plan_next: str
+
+    # ヒューマンバリデータの結果
+    human_validation_answer: bool 

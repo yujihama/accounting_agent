@@ -14,7 +14,7 @@ except ImportError:
     # requirements.txt には含めるので通常は通る想定。
     pass
 
-from langgraph.graph import StateGraph
+from langgraph.graph import StateGraph, END
 
 from .state import AppState
 from .nodes import (
@@ -24,6 +24,8 @@ from .nodes import (
     validate_and_sort_matches,
     write_reconciled_csv,
     write_unreconciled_csv,
+    planner,
+    ask_human_validation,
 )
 
 
@@ -36,24 +38,52 @@ def build_graph() -> Any:
     sg: StateGraph = StateGraph(AppState)
 
     # ノードを登録
+    sg.add_node("planner", planner)
     sg.add_node("read_deposit_file", read_deposit_file)
     sg.add_node("read_billing_file", read_billing_file)
     sg.add_node("match_data_by_key", match_data_by_key)
     sg.add_node("validate_and_sort_matches", validate_and_sort_matches)
     sg.add_node("write_reconciled_csv", write_reconciled_csv)
     sg.add_node("write_unreconciled_csv", write_unreconciled_csv)
+    sg.add_node("human_validator", ask_human_validation)
 
-    # エントリーポイント
-    sg.set_entry_point("read_deposit_file")
+    # エントリーポイントをプランナーに設定
+    sg.set_entry_point("planner")
 
-    # エッジ（固定フロー）
-    sg.add_edge("read_deposit_file", "read_billing_file")
-    sg.add_edge("read_billing_file", "match_data_by_key")
-    sg.add_edge("match_data_by_key", "validate_and_sort_matches")
-    sg.add_edge("validate_and_sort_matches", "write_reconciled_csv")
-    sg.add_edge("write_reconciled_csv", "write_unreconciled_csv")
+    # -------------------------
+    # 動的ルーティング設定
+    # -------------------------
 
-    # LangGraph はアウトバウンドエッジを持たないノードを自動で終端とみなす
+    # planner -> 各ノード への条件付きエッジ
+    def _edge_selector(state: AppState):  # type: ignore[override]
+        return state.get("plan_next", "__end__")
+
+    sg.add_conditional_edges(
+        "planner",
+        _edge_selector,
+        {
+            "read_deposit_file": "read_deposit_file",
+            "read_billing_file": "read_billing_file",
+            "match_data_by_key": "match_data_by_key",
+            "validate_and_sort_matches": "validate_and_sort_matches",
+            "write_reconciled_csv": "write_reconciled_csv",
+            "write_unreconciled_csv": "write_unreconciled_csv",
+            "human_validator": "human_validator",
+            "__end__": END,
+        },
+    )
+
+    # 各ノード完了後は planner へ戻す
+    for node_name in [
+        "read_deposit_file",
+        "read_billing_file",
+        "match_data_by_key",
+        "validate_and_sort_matches",
+        "write_reconciled_csv",
+        "write_unreconciled_csv",
+        "human_validator",
+    ]:
+        sg.add_edge(node_name, "planner")
 
     return sg.compile()
 
