@@ -148,6 +148,7 @@ def read_instruction_file(state: AppState) -> AppState:
         "human_validator",
         "inventory_matching_agent",
         "receivables_reconciliation_agent",
+        "accounting_reconciliation_agent",
         "__end__",
     ]
     suggested = suggest_tools(tasks, tool_list_full)
@@ -240,6 +241,7 @@ def planner(state: AppState) -> AppState:
             "human_validator",
             "inventory_matching_agent",
             "receivables_reconciliation_agent",
+            "accounting_reconciliation_agent",
             "__end__",
         ]
         # 進捗状況を分かりやすく表示
@@ -328,6 +330,7 @@ def planner(state: AppState) -> AppState:
         "human_validator": lambda: True,
         "inventory_matching_agent": lambda: True,
         "receivables_reconciliation_agent": lambda: True,
+        "accounting_reconciliation_agent": lambda: True,
         "__end__": lambda: not (
             _needs_deposit()
             or _needs_billing()

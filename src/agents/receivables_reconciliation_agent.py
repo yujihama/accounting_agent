@@ -41,5 +41,12 @@ def receivables_reconciliation_agent(state: AppState) -> AppState:
     )
 
     state.setdefault("final_output_paths", {}).update(results)
-    state["plan_next"] = "__end__"
+
+    # -------------------------------------------------------------
+    # フロー終了判定は原則 planner に委譲する。
+    # params で terminate_after=True が指定された場合のみ即終了
+    # -------------------------------------------------------------
+    if params.get("terminate_after", False):
+        state["plan_next"] = "__end__"
+
     return state 
