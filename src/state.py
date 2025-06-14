@@ -38,4 +38,7 @@ class AppState(TypedDict, total=False):
 
     # 専門家エージェント呼び出し
     next_agent: str
-    agent_parameters: Dict[str, Any] 
+    agent_parameters: Dict[str, Any]
+
+    # エラー情報
+    errors: List[str]
