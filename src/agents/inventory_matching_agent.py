@@ -48,19 +48,38 @@ def _run_matching(state: AppState) -> AppState:
     if "_src_file" not in state or "_tgt_file" not in state:
         state = _ensure_files(state)
 
+    # 在庫照合用のパラメータ設定
+    source_key = params.get("source_key", "sku_code")
+    target_key = params.get("target_key", "sku")
+    source_numeric_field = params.get("source_numeric_field", "system_quantity")
+    target_numeric_field = params.get("target_numeric_field", "actual_quantity")
+    tolerance_pct = float(params.get("tolerance_pct", 2.0))
+
     results = generic_matching_workflow(
         source_file=state["_src_file"],
         target_file=state["_tgt_file"],
-        source_key=params.get("source_key", "sku"),
-        target_key=params.get("target_key", "sku_code"),
-        numeric_field=params.get("numeric_field", "quantity"),
-        tolerance_pct=float(params.get("tolerance_pct", 2.0)),
+        source_key=source_key,
+        target_key=target_key,
+        numeric_field=source_numeric_field,
+        target_numeric_field=target_numeric_field,
+        tolerance_pct=tolerance_pct,
         output_dir=str(pathlib.Path(params.get("output_dir", "output")).resolve()),
     )
+    
+    # 在庫照合では差異があるもののみを discrepancy_report として出力
     # unreconciled を discrepancy_report に名前変換して格納
     csv_out = results.get("unreconciled")
     if csv_out:
-        state.setdefault("final_output_paths", {})["discrepancy_report"] = csv_out
+        # ファイル名を discrepancy_report.csv に変更
+        output_dir = pathlib.Path(params.get("output_dir", "output")).resolve()
+        discrepancy_path = str(output_dir / "discrepancy_report.csv")
+        
+        # ファイルをコピー
+        import shutil
+        shutil.copy2(csv_out, discrepancy_path)
+        
+        state.setdefault("final_output_paths", {})["discrepancy_report"] = discrepancy_path
+    
     return state
 
 

@@ -36,8 +36,8 @@ _BULLET_PATTERN = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.*)$")
 def parse_instruction_file(path: str | Path) -> List[str]:
     """作業指示書を読み込み、タスク行のリストを返す。
 
-    ChatOpenAI と `OPENAI_API_KEY` が利用可能な前提で、LLM でタスク抽出を行います。
-    何らかの理由で LLM が利用できない、または抽出に失敗した場合は例外を送出します。
+    ChatOpenAI と `OPENAI_API_KEY` が利用可能な場合は LLM でタスク抽出を行います。
+    利用できない場合や抽出に失敗した場合は、ヒューリスティック手法にフォールバックします。
     """
 
     p = Path(path)
@@ -46,18 +46,52 @@ def parse_instruction_file(path: str | Path) -> List[str]:
 
     file_content = p.read_text(encoding="utf-8")
 
-    # LLM 利用前提チェック
-    if ChatOpenAI is None:
-        raise RuntimeError("ChatOpenAI (langchain_openai) が利用できません。モジュールがインストールされているか確認してください。")
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY が設定されていません。環境変数に API キーを設定してください。")
+    # LLM 利用可能性チェック
+    if ChatOpenAI is not None and os.getenv("OPENAI_API_KEY"):
+        try:
+            # LLM による抽出を試行
+            tasks_llm = _extract_via_llm(file_content)
+            if tasks_llm:
+                return tasks_llm
+        except Exception:
+            # LLM 失敗時はフォールバックへ
+            pass
 
-    # LLM による抽出（失敗時は例外をそのまま上位へ）
-    tasks_llm = _extract_via_llm(file_content)
-    if not tasks_llm:
-        raise RuntimeError("LLM によるタスク抽出結果が空でした。指示書の内容を確認してください。")
+    # ヒューリスティックフォールバック
+    tasks_heuristic = _extract_via_heuristic(file_content)
+    if not tasks_heuristic:
+        raise RuntimeError("タスク抽出に失敗しました。指示書の内容を確認してください。")
 
-    return tasks_llm
+    return tasks_heuristic
+
+
+# ------------------------------------------------------------
+# ヒューリスティック抽出
+# ------------------------------------------------------------
+
+
+def _extract_via_heuristic(markdown_text: str) -> List[str]:
+    """ヒューリスティック手法でタスク行を抽出する。"""
+    
+    lines = markdown_text.split('\n')
+    tasks = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # 箇条書きパターンをチェック
+        match = _BULLET_PATTERN.match(line)
+        if match:
+            task = match.group(1).strip()
+            if task:
+                tasks.append(task)
+        # 番号なしの簡単な文もタスクとして扱う
+        elif line.endswith('。') or line.endswith('.') or '照合' in line or '突合' in line or '検証' in line:
+            tasks.append(line)
+    
+    return tasks
 
 
 # ------------------------------------------------------------
@@ -157,4 +191,4 @@ def _extract_via_llm(markdown_text: str) -> List[str]:
         raise RuntimeError("LLM 出力の構造化解析に失敗しました") from e
 
     # tasks をクリーニングして返却
-    return [t.strip() for t in parsed.tasks if str(t).strip()] 
+    return [t.strip() for t in parsed.tasks if str(t).strip()]

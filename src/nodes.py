@@ -232,11 +232,32 @@ def planner(state: AppState) -> AppState:
 
         parser = PydanticOutputParser(pydantic_object=PlannerExtraction)
 
-        extraction_prompt = (
-            "あなたは監督エージェントです。以下のタスク記述を読み取り、呼び出すべき専門家エージェントとそのパラメータを JSON で出力してください。\n"
-            f"{parser.get_format_instructions()}\n\n"
-            "# タスク一覧\n" + "\n".join(state["instruction_tasks"])
-        )
+        # 指示書の内容を分析してパラメータを抽出
+        tasks_text = "\n".join(state["instruction_tasks"])
+        
+        extraction_prompt = f"""あなたは監督エージェントです。以下のタスク記述を読み取り、呼び出すべき専門家エージェントとそのパラメータを JSON で出力してください。
+
+{parser.get_format_instructions()}
+
+# タスク一覧
+{tasks_text}
+
+# エージェント選択ガイド
+- 売掛金消込、入金照合、請求照合 → receivables_reconciliation_agent
+- 在庫照合、棚卸照合、在庫差異 → inventory_matching_agent  
+- 人事データ検証、名簿突合 → employee_data_validator_agent
+- その他の会計照合 → accounting_reconciliation_agent
+
+# パラメータ抽出ガイド
+- 突合キー: 「突合キー」「マッチングキー」などの記述から抽出
+- 検証項目: 「検証項目」「比較項目」などの記述から抽出
+- 許容範囲: 「±2%」「誤差」などの記述から数値を抽出
+- 出力ファイル: 「出力」「レポート」などの記述から抽出
+
+例:
+- 在庫照合の場合: {{"source_key": "sku_code", "target_key": "sku", "source_numeric_field": "system_quantity", "target_numeric_field": "actual_quantity", "tolerance_pct": 2.0}}
+- 売掛金消込の場合: {{"source_key": "receipt_no", "target_key": "invoice_number", "numeric_field": "amount", "tolerance_pct": 0.0}}
+"""
 
         try:
             llm_extract = ChatOpenAI(model_name="gpt-4.1-mini", temperature=0.0, max_tokens=512)
@@ -249,6 +270,8 @@ def planner(state: AppState) -> AppState:
             parsed: PlannerExtraction = parser.parse(raw_content)
             state["next_agent"] = parsed.next_agent.value
             state["agent_parameters"] = parsed.agent_parameters
+            print(f"[planner] Extracted agent: {state['next_agent']}")
+            print(f"[planner] Extracted parameters: {state['agent_parameters']}")
         except Exception as e:
             # LLM 抽出に失敗した場合はワークフローを停止
             print(f"[planner] parameter extraction failed: {e}")
@@ -441,4 +464,4 @@ def accounting_reconciliation_agent_node(state: AppState) -> AppState:
     print("---NODE: accounting_reconciliation_agent---")
     _mark_executed(state, "accounting_reconciliation_agent")
     # TODO: 実装
-    return state 
+    return state

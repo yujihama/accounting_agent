@@ -35,6 +35,7 @@ def generic_matching_workflow(
     target_key: str,
     output_dir: str = "output",
     numeric_field: str = "amount",
+    target_numeric_field: str = None,  # 追加: ターゲット側の数値フィールド名
     tolerance_pct: float = 0.0,
     # Dependency injection hooks -------------------------------------------------
     source_reader: Callable[[str], List[Dict[str, Any]]] = _default_reader,
@@ -50,7 +51,8 @@ def generic_matching_workflow(
         source_key: source のマッチングに使用するキー名。
         target_key: target のマッチングに使用するキー名。
         output_dir: CSV 出力先ディレクトリ。
-        numeric_field: 照合対象の数値フィールド名。
+        numeric_field: 照合対象の数値フィールド名（source側）。
+        target_numeric_field: 照合対象の数値フィールド名（target側）。Noneの場合はnumeric_fieldと同じ。
         tolerance_pct: 許容誤差(%)。
         source_reader: 依存性注入用リーダ関数(デフォルトは拡張子自動判定)。
         target_reader: 依存性注入用リーダ関数。
@@ -63,6 +65,10 @@ def generic_matching_workflow(
             "unreconciled": "path/to/unreconciled.csv"
         }
     """
+
+    # target_numeric_field が指定されていない場合は numeric_field と同じにする
+    if target_numeric_field is None:
+        target_numeric_field = numeric_field
 
     # ------------------------------------------------------------------
     # 1. 入力読み込み
@@ -94,7 +100,7 @@ def generic_matching_workflow(
 
         try:
             v1 = float(src.get(numeric_field, 0))
-            v2 = float(tgt.get(numeric_field, 0))
+            v2 = float(tgt.get(target_numeric_field, 0))
         except (ValueError, TypeError):
             # 数値変換できなければ未突合扱い
             pair["validation_error"] = "invalid_numeric"
@@ -124,4 +130,4 @@ def generic_matching_workflow(
     return {
         "reconciled": reconciled_path,
         "unreconciled": unreconciled_path,
-    } 
+    }
