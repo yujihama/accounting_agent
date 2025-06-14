@@ -225,10 +225,24 @@ def planner(state: AppState) -> AppState:
             employee_data_validator_agent = "employee_data_validator_agent"
             accounting_reconciliation_agent = "accounting_reconciliation_agent"
 
+        class ValidationRule(BaseModel):
+            field: str = Field(..., description="検証する項目名")
+            target_field: str | None = Field(None, description="比較対象の項目名")
+            severity: str = Field("Error", description="報告レベル")
+            validator: str | None = Field(None, description="検証タイプ")
+            tolerance_pct: float | None = Field(None, description="許容誤差(%)")
+
+            model_config = {"extra": "allow"}
+
+        class AgentParameters(BaseModel):
+            validation_rules: List[ValidationRule] | None = None
+
+            model_config = {"extra": "allow"}
+
         class PlannerExtraction(BaseModel):
             """LLM から返される構造化パラメータスキーマ"""
             next_agent: AgentEnum = Field(..., description="呼び出すべき専門家エージェント名")
-            agent_parameters: Dict[str, Any] = Field(default_factory=dict, description="エージェントへ渡すパラメータ")
+            agent_parameters: AgentParameters = Field(default_factory=AgentParameters, description="エージェントへ渡すパラメータ")
 
         parser = PydanticOutputParser(pydantic_object=PlannerExtraction)
 
@@ -255,8 +269,9 @@ def planner(state: AppState) -> AppState:
 - 出力ファイル: 「出力」「レポート」などの記述から抽出
 
 例:
-- 在庫照合の場合: {{"source_key": "sku_code", "target_key": "sku", "source_numeric_field": "system_quantity", "target_numeric_field": "actual_quantity", "tolerance_pct": 2.0}}
-- 売掛金消込の場合: {{"source_key": "receipt_no", "target_key": "invoice_number", "numeric_field": "amount", "tolerance_pct": 0.0}}
+- 在庫照合の場合: {"source_key": "sku_code", "target_key": "sku", "source_numeric_field": "system_quantity", "target_numeric_field": "actual_quantity", "tolerance_pct": 2.0}
+- 売掛金消込の場合: {"source_key": "receipt_no", "target_key": "invoice_number", "numeric_field": "amount", "tolerance_pct": 0.0}
+- 人事データ検証の場合: {"source_key": "employee_id", "target_key": "emp_id", "validation_rules": [{"field": "department_code", "target_field": "dept", "severity": "Warning"}, {"field": "title_code", "severity": "Error"}]}
 """
 
         try:
@@ -269,7 +284,7 @@ def planner(state: AppState) -> AppState:
             raw_content = extraction_resp.content if hasattr(extraction_resp, "content") else extraction_resp
             parsed: PlannerExtraction = parser.parse(raw_content)
             state["next_agent"] = parsed.next_agent.value
-            state["agent_parameters"] = parsed.agent_parameters
+            state["agent_parameters"] = parsed.agent_parameters.model_dump(exclude_none=True)
             print(f"[planner] Extracted agent: {state['next_agent']}")
             print(f"[planner] Extracted parameters: {state['agent_parameters']}")
         except Exception as e:
