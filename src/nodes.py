@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 import os
+from enum import Enum
 
 from .state import AppState
 from .tools.csv_reader import csv_reader
@@ -18,6 +19,7 @@ from .agents.inventory_matching_agent import inventory_matching_agent as _invent
 from langchain.output_parsers import PydanticOutputParser  # NEW
 from pydantic import BaseModel, Field  # NEW
 from .agents.receivables_reconciliation_agent import receivables_reconciliation_agent as _receivables_agent
+from .agents.employee_data_validator_agent import employee_data_validator_agent as _employee_agent
 
 
 # -----------------------------
@@ -137,7 +139,7 @@ def read_instruction_file(state: AppState) -> AppState:
         raise RuntimeError(f"作業指示書の解析に失敗しました: {e}")
 
     # 推奨ツールキューを生成して保存
-    tool_list_full = [
+    tool_list = [
         "read_instruction_file",
         "read_deposit_file",
         "read_billing_file",
@@ -148,10 +150,11 @@ def read_instruction_file(state: AppState) -> AppState:
         "human_validator",
         "inventory_matching_agent",
         "receivables_reconciliation_agent",
+        "employee_data_validator_agent",
         "accounting_reconciliation_agent",
         "__end__",
     ]
-    suggested = suggest_tools(tasks, tool_list_full)
+    suggested = suggest_tools(tasks, tool_list)
     state["suggested_queue"] = suggested
 
     # 実行履歴に追加
@@ -170,13 +173,61 @@ def planner(state: AppState) -> AppState:
     if state.get("plan_next") == "__end__":
         return state
 
+    # OPENAI_API_KEY が設定されていなければ例外
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY が設定されていません。LLM を利用できないためプランナーを実行できません。")
+
+    # 次ノード選択肢 Enum と PydanticOutputParser を定義（常に必要）
+    class NextNodeEnum(str, Enum):
+        read_instruction_file = "read_instruction_file"
+        read_deposit_file = "read_deposit_file"
+        read_billing_file = "read_billing_file"
+        match_data_by_key = "match_data_by_key"
+        validate_and_sort_matches = "validate_and_sort_matches"
+        write_reconciled_csv = "write_reconciled_csv"
+        write_unreconciled_csv = "write_unreconciled_csv"
+        human_validator = "human_validator"
+        inventory_matching_agent = "inventory_matching_agent"
+        receivables_reconciliation_agent = "receivables_reconciliation_agent"
+        employee_data_validator_agent = "employee_data_validator_agent"
+        accounting_reconciliation_agent = "accounting_reconciliation_agent"
+        end = "__end__"
+
+    class NextNodeModel(BaseModel):
+        next_node: NextNodeEnum = Field(..., description="次に実行するツール名")
+
+    next_parser = PydanticOutputParser(pydantic_object=NextNodeModel)
+
+    tool_list = [
+        "read_instruction_file",
+        "read_deposit_file",
+        "read_billing_file",
+        "match_data_by_key",
+        "validate_and_sort_matches",
+        "write_reconciled_csv",
+        "write_unreconciled_csv",
+        "human_validator",
+        "inventory_matching_agent",
+        "receivables_reconciliation_agent",
+        "employee_data_validator_agent",
+        "accounting_reconciliation_agent",
+        "__end__",
+    ]
+
     # -------------------------------------------------------------
     # 1. LLM + PydanticOutputParser によるパラメータ抽出
     # -------------------------------------------------------------
     if "instruction_tasks" in state and not state.get("next_agent"):
+        # エージェント名候補を Enum で限定
+        class AgentEnum(str, Enum):
+            inventory_matching_agent = "inventory_matching_agent"
+            receivables_reconciliation_agent = "receivables_reconciliation_agent"
+            employee_data_validator_agent = "employee_data_validator_agent"
+            accounting_reconciliation_agent = "accounting_reconciliation_agent"
+
         class PlannerExtraction(BaseModel):
             """LLM から返される構造化パラメータスキーマ"""
-            next_agent: str = Field(..., description="呼び出すべき専門家エージェント名")
+            next_agent: AgentEnum = Field(..., description="呼び出すべき専門家エージェント名")
             agent_parameters: Dict[str, Any] = Field(default_factory=dict, description="エージェントへ渡すパラメータ")
 
         parser = PydanticOutputParser(pydantic_object=PlannerExtraction)
@@ -196,7 +247,7 @@ def planner(state: AppState) -> AppState:
 
             raw_content = extraction_resp.content if hasattr(extraction_resp, "content") else extraction_resp
             parsed: PlannerExtraction = parser.parse(raw_content)
-            state["next_agent"] = parsed.next_agent
+            state["next_agent"] = parsed.next_agent.value
             state["agent_parameters"] = parsed.agent_parameters
         except Exception as e:
             # LLM 抽出に失敗した場合はワークフローを停止
@@ -212,10 +263,6 @@ def planner(state: AppState) -> AppState:
         state["plan_next"] = state["next_agent"]
         return state
 
-    # OPENAI_API_KEY が設定されていなければ例外
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY が設定されていません。LLM を利用できないためプランナーを実行できません。")
-
     try:
         llm = ChatOpenAI(model_name="gpt-4.1-mini", temperature=0.0, max_tokens=32)
         # -------------------------------------------------------------
@@ -224,26 +271,15 @@ def planner(state: AppState) -> AppState:
         # 1) 前提条件を満たさないツールや、必須アウトプットが揃わない段階での `__end__` 選択は禁止と明示
         # 2) 出力はツール名のみ（日本語不可）という指示を強化
         # 3) 進捗状況をアイコン付きで簡潔に示して判断材料を明確化
-        system_prompt = (
+        base_prompt = (
             "あなたは優秀な経理担当アシスタントです。以下のルールを厳守し、最適な次のツールを 1 つだけ選択してください。\n"
             "- 前提条件を満たしていないツールは絶対に選ばないこと。\n"
             "- 全ての必須アウトプットファイル（reconciled.csv と unreconciled.csv）が出力されるまでは __end__ を選ばないこと。\n"
-            "- 回答はツール名 1 語のみ。日本語や説明を付けないこと。"
+            "- 回答は JSON 形式のみ。余計な説明を付けないこと。\n"
         )
-        tool_list = [
-            "read_instruction_file",
-            "read_deposit_file",
-            "read_billing_file",
-            "match_data_by_key",
-            "validate_and_sort_matches",
-            "write_reconciled_csv",
-            "write_unreconciled_csv",
-            "human_validator",
-            "inventory_matching_agent",
-            "receivables_reconciliation_agent",
-            "accounting_reconciliation_agent",
-            "__end__",
-        ]
+
+        system_prompt = base_prompt + "\n" + next_parser.get_format_instructions()
+
         # 進捗状況を分かりやすく表示
         def _flag(cond: bool) -> str:
             return "done" if cond else "not done"
@@ -278,10 +314,9 @@ def planner(state: AppState) -> AppState:
             {"role": "user", "content": user_prompt},
         ]
         response = llm.invoke(messages)
-        if isinstance(response, str):
-            next_node = response.strip()
-        else:
-            next_node = str(response.content).strip()
+        raw_resp = response.content if hasattr(response, "content") else response
+        parsed_resp: NextNodeModel = next_parser.parse(raw_resp)
+        next_node = parsed_resp.next_node.value
     except Exception as e:
         # LLM 呼び出し失敗時は例外をそのまま上位へ
         raise RuntimeError(f"planner ノードでの LLM 呼び出しに失敗しました: {e}")
@@ -330,6 +365,7 @@ def planner(state: AppState) -> AppState:
         "human_validator": lambda: True,
         "inventory_matching_agent": lambda: True,
         "receivables_reconciliation_agent": lambda: True,
+        "employee_data_validator_agent": lambda: True,
         "accounting_reconciliation_agent": lambda: True,
         "__end__": lambda: not (
             _needs_deposit()
@@ -345,25 +381,16 @@ def planner(state: AppState) -> AppState:
     if next_node not in valid_next:
         raise RuntimeError(f"未知のツール名が返されました: {next_node}")
 
-    # 2) 前提条件を満たさないツール
+    # 2) 前提条件を満たしていないツール選択
     if not valid_next[next_node]():
-        raise RuntimeError(
-            f"LLM が前提条件を満たしていないツールを選択しました: {next_node}. 現在の state では実行できません。"
-        )
-
-    # 決定結果を state に保存
-    state["plan_next"] = next_node
+        # 必須アウトプットが揃っていないのに __end__ を選んだ場合もここに来る
+        raise RuntimeError(f"前提条件を満たさないツールが選択されました: {next_node}")
 
     # ------------------------------------------------------------------
-    # ループガード: 同じノードを連続 50 回以上提案したら異常とみなす
+    # 最終的な決定
     # ------------------------------------------------------------------
-    tick = state.setdefault("_planner_tick", 0)
-    state["_planner_tick"] = tick + 1
-    if state["_planner_tick"] > 500:
-        raise RuntimeError("planner が 500 ステップを超えました。無限ループの可能性があります。")
-
     print(f"[planner] next_node = {next_node}")
-
+    state["plan_next"] = next_node
     return state
 
 
@@ -372,13 +399,10 @@ def planner(state: AppState) -> AppState:
 # -----------------------------
 
 def ask_human_validation(state: AppState) -> AppState:
-    print("---NODE: human_validator---")
+    print("---NODE: ask_human_validation---")
     _mark_executed(state, "human_validator")
-    question = state.get("human_validation_question", "この処理を続行しますか？")
-    answer = human_validator(question)
-    state["human_validation_answer"] = answer
-    # human_validator の結果をどう使うかは将来的にプランナー側で判断する
-    return state 
+    human_validator(state)
+    return state
 
 
 # ---------------------------------
@@ -386,7 +410,9 @@ def ask_human_validation(state: AppState) -> AppState:
 # ---------------------------------
 
 def _mark_executed(state: AppState, node_name: str) -> None:
-    state.setdefault("_executed_tools", []).append(node_name) 
+    if "_executed_tools" not in state:
+        state["_executed_tools"] = []
+    state["_executed_tools"].append(node_name)
 
 
 # --------------------------
@@ -402,4 +428,17 @@ def inventory_matching_agent_node(state: AppState) -> AppState:
 def receivables_reconciliation_agent_node(state: AppState) -> AppState:
     print("---NODE: receivables_reconciliation_agent---")
     _mark_executed(state, "receivables_reconciliation_agent")
-    return _receivables_agent(state) 
+    return _receivables_agent(state)
+
+
+def employee_data_validator_agent_node(state: AppState) -> AppState:
+    print("---NODE: employee_data_validator_agent---")
+    _mark_executed(state, "employee_data_validator_agent")
+    return _employee_agent(state)
+
+
+def accounting_reconciliation_agent_node(state: AppState) -> AppState:
+    print("---NODE: accounting_reconciliation_agent---")
+    _mark_executed(state, "accounting_reconciliation_agent")
+    # TODO: 実装
+    return state 

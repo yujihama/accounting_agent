@@ -29,6 +29,7 @@ from .nodes import (
     read_instruction_file,
     inventory_matching_agent_node,
     receivables_reconciliation_agent_node,
+    employee_data_validator_agent_node,
 )
 
 
@@ -53,6 +54,7 @@ def build_graph() -> Any:
     sg.add_node("inventory_matching_agent", inventory_matching_agent_node)
     sg.add_node("receivables_reconciliation_agent", receivables_reconciliation_agent_node)
     sg.add_node("accounting_reconciliation_agent", receivables_reconciliation_agent_node)
+    sg.add_node("employee_data_validator_agent", employee_data_validator_agent_node)
 
     # エントリーポイントをプランナーに設定
     sg.set_entry_point("planner")
@@ -80,6 +82,7 @@ def build_graph() -> Any:
             "inventory_matching_agent": "inventory_matching_agent",
             "receivables_reconciliation_agent": "receivables_reconciliation_agent",
             "accounting_reconciliation_agent": "accounting_reconciliation_agent",
+            "employee_data_validator_agent": "employee_data_validator_agent",
             "__end__": END,
         },
     )
@@ -96,6 +99,7 @@ def build_graph() -> Any:
         "inventory_matching_agent",
         "receivables_reconciliation_agent",
         "accounting_reconciliation_agent",
+        "employee_data_validator_agent",
     ]:
         sg.add_edge(node_name, "planner")
 
