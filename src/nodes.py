@@ -148,7 +148,6 @@ def read_instruction_file(state: AppState) -> AppState:
         "human_validator",
         "inventory_matching_agent",
         "receivables_reconciliation_agent",
-        "accounting_reconciliation_agent",
         "__end__",
     ]
     suggested = suggest_tools(tasks, tool_list_full)
@@ -199,8 +198,11 @@ def planner(state: AppState) -> AppState:
             state["next_agent"] = parsed.next_agent
             state["agent_parameters"] = parsed.agent_parameters
         except Exception as e:
-            # LLM 抽出に失敗した場合はログを出力し、次のロジックにフォールバック
+            # LLM 抽出に失敗した場合はワークフローを停止
             print(f"[planner] parameter extraction failed: {e}")
+            state.setdefault("errors", []).append(f"planner parameter extraction failed: {e}")
+            state["plan_next"] = "__end__"
+            return state
 
     # -------------------------------------------------------------
     # 2. next_agent が設定されていればそれを優先
@@ -238,7 +240,6 @@ def planner(state: AppState) -> AppState:
             "human_validator",
             "inventory_matching_agent",
             "receivables_reconciliation_agent",
-            "accounting_reconciliation_agent",
             "__end__",
         ]
         # 進捗状況を分かりやすく表示
@@ -327,7 +328,6 @@ def planner(state: AppState) -> AppState:
         "human_validator": lambda: True,
         "inventory_matching_agent": lambda: True,
         "receivables_reconciliation_agent": lambda: True,
-        "accounting_reconciliation_agent": lambda: True,
         "__end__": lambda: not (
             _needs_deposit()
             or _needs_billing()

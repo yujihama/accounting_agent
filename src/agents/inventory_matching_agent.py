@@ -58,9 +58,30 @@ def inventory_matching_agent(state: AppState) -> AppState:  # noqa: D401
         output_dir=output_dir_abs,
     )
 
-    state.setdefault("final_output_paths", {}).update(results)
+    # -------------------------------------------------------------
+    # unreconciled.csv を読み取り、差異レポートを整形
+    # -------------------------------------------------------------
+    unreconciled_path = results["unreconciled"]
+    rows = csv_reader(unreconciled_path)
+
+    discrepancy_rows = []
+    for row in rows:
+        discrepancy_rows.append(
+            {
+                "sku_code": row.get("sku_code") or row.get("sku"),
+                "product_name": row.get("product_name") or row.get("name"),
+                "system_quantity": row.get("system_quantity"),
+                "actual_quantity": row.get("actual_quantity"),
+                "difference": row.get("difference"),
+            }
+        )
+
+    report_path = str(pathlib.Path(output_dir_abs) / "discrepancy_report.csv")
+    csv_writer(discrepancy_rows, report_path)
+
+    state.setdefault("final_output_paths", {})["discrepancy_report"] = report_path
 
     # エージェント処理完了。プランナーに戻さず終了させたい場合、plan_next='__end__'
     state["plan_next"] = "__end__"
 
-    return state 
+    return state
