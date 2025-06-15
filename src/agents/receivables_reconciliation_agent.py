@@ -1,68 +1,54 @@
 from __future__ import annotations
 
-from src.state import AppState
 from typing import Dict, Any
-import pathlib
 
-from src.agent_framework.specialist_agent import build_specialist_graph
+from src.state import AppState
 from src.workflows.generic_matching_workflow import generic_matching_workflow
 
-# --------------------------------------------------------------------------------------
-# 独自ノード (追加集約が必要な場合のみ)
-# --------------------------------------------------------------------------------------
 
-# 今回は既存 nodes.py の共通ノードをそのまま利用するので追加ノードは不要。
+def receivables_reconciliation_agent(state: AppState) -> AppState:
+    """売掛金消込エージェント（薄いアダプター層）
 
-# --------------------------------------------------------------------------------------
-# ノード定義
-# --------------------------------------------------------------------------------------
+    監督エージェントから受け取ったパラメータをそのまま
+    汎用照合ワークフローに渡すシンプルなアダプター。
+    Hybrid Key-Specification Modelに完全対応。
+    """
+    params: Dict[str, Any] = state.get("agent_parameters", {})
+    input_files = state.get("input_files", {})
 
-def _ensure_files(state: AppState) -> AppState:
-    params: Dict[str, Any] = state.get("agent_parameters", {})  # type: ignore[assignment]
-    inp = state.get("input_files", {})
-    state["_src_file"] = params.get("source_file") or inp.get("deposit")
-    state["_tgt_file"] = params.get("target_file") or inp.get("billing")
-    if not state["_src_file"] or not state["_tgt_file"]:
-        raise RuntimeError("receivables_reconciliation_agent: deposit/billing file missing")
-    state["_output_dir"] = params.get("output_dir", "output")
+    source_file = params.get("source_file") or input_files.get("deposit")
+    target_file = params.get("target_file") or input_files.get("billing")
+
+    if not source_file or not target_file:
+        raise RuntimeError("receivables_reconciliation_agent: 入力ファイルが不足しています")
+
+    match_keys = None
+    if params.get("match_keys"):
+        match_keys = {
+            "source": params["match_keys"]["source"],
+            "target": params["match_keys"]["target"],
+        }
+        print(f"監督エージェントから指定されたキー: {match_keys}")
+    else:
+        print("キー未指定 - 汎用ワークフローで自動推定を実行")
+
+    try:
+        results = generic_matching_workflow(
+            source_file=source_file,
+            target_file=target_file,
+            match_keys=match_keys,
+            output_dir=params.get("output_dir", "output"),
+            numeric_field=params.get("numeric_field", "amount"),
+            target_numeric_field=params.get("target_numeric_field"),
+            tolerance_pct=float(params.get("tolerance_pct", 0.0)),
+            validation_rules=params.get("validation_rules"),
+        )
+        state.setdefault("final_output_paths", {}).update(results)
+        state["plan_next"] = "__end__"
+        print(f"売掛金消込完了: {results}")
+    except Exception as e:  # pragma: no cover - runtime errors handled
+        state.setdefault("errors", []).append(f"売掛金消込処理エラー: {str(e)}")
+        state["plan_next"] = "__end__"
+        print(f"エラー: {e}")
+
     return state
-
-def _run_matching(state: AppState) -> AppState:
-    params: Dict[str, Any] = state.get("agent_parameters", {})  # type: ignore[assignment]
-    # ensure _src_file/_tgt_file が存在
-    if "_src_file" not in state or "_tgt_file" not in state:
-        state = _ensure_files(state)
-
-    results = generic_matching_workflow(
-        source_file=state["_src_file"],
-        target_file=state["_tgt_file"],
-        source_key=params.get("source_key", "receipt_no"),
-        target_key=params.get("target_key", "invoice_number"),
-        numeric_field=params.get("numeric_field", "amount"),
-        tolerance_pct=float(params.get("tolerance_pct", 0.0)),
-        output_dir=str(pathlib.Path(state["_output_dir"]).resolve()),
-    )
-    state.setdefault("final_output_paths", {}).update(results)
-    return state
-
-# --------------------------------------------------------------------------------------
-# LangGraph 構築
-# --------------------------------------------------------------------------------------
-
-_NODE_MAP = {
-    "ensure_files": _ensure_files,
-    "run_matching": _run_matching,
-}
-
-_GRAPH = build_specialist_graph(_NODE_MAP)
-
-
-# --------------------------------------------------------------------------------------
-# エージェント関数
-# --------------------------------------------------------------------------------------
-
-def receivables_reconciliation_agent(state: AppState) -> AppState:  # noqa: D401
-    """売掛金消込エージェント (planner 付き LangGraph 版)"""
-    final_state = _GRAPH.invoke(state)
-    final_state["plan_next"] = "__end__"
-    return final_state 

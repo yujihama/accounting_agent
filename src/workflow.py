@@ -24,13 +24,15 @@ from .nodes import (
     validate_and_sort_matches,
     write_reconciled_csv,
     write_unreconciled_csv,
-    planner,
     ask_human_validation,
     read_instruction_file,
     inventory_matching_agent_node,
     receivables_reconciliation_agent_node,
     employee_data_validator_agent_node,
 )
+from .planners.generic_planner import make_enhanced_planner
+
+enhanced_planner = make_enhanced_planner()
 
 
 # -----------------------------
@@ -43,7 +45,7 @@ def build_graph() -> Any:
 
     # ノードを登録
     sg.add_node("read_instruction_file", read_instruction_file)
-    sg.add_node("planner", planner)
+    sg.add_node("planner", enhanced_planner)
     sg.add_node("read_deposit_file", read_deposit_file)
     sg.add_node("read_billing_file", read_billing_file)
     sg.add_node("match_data_by_key", match_data_by_key)
@@ -64,12 +66,15 @@ def build_graph() -> Any:
     # -------------------------
 
     # planner -> 各ノード への条件付きエッジ
-    def _edge_selector(state: AppState):  # type: ignore[override]
+    def _enhanced_edge_selector(state: AppState):  # type: ignore[override]
+        next_agent = state.get("next_agent")
+        if next_agent:
+            return next_agent
         return state.get("plan_next", "__end__")
 
     sg.add_conditional_edges(
         "planner",
-        _edge_selector,
+        _enhanced_edge_selector,
         {
             "read_instruction_file": "read_instruction_file",
             "read_deposit_file": "read_deposit_file",

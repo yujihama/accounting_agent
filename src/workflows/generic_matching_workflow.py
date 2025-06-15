@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Any
 from ..tools.csv_reader import csv_reader
 from ..tools.excel_reader import excel_reader
 from ..tools.key_based_matcher import key_based_matcher
+from ..tools.key_name_detector import infer_matching_keys
 from ..tools.csv_writer import csv_writer
 from ..tools.numeric_field_validator import numeric_field_validator
 from ..tools.string_field_validator import string_field_validator
@@ -32,8 +33,7 @@ def generic_matching_workflow(
     *,
     source_file: str,
     target_file: str,
-    source_key: str,
-    target_key: str,
+    match_keys: Dict[str, str] | None = None,
     output_dir: str = "output",
     numeric_field: str = "amount",
     target_numeric_field: str | None = None,
@@ -51,8 +51,8 @@ def generic_matching_workflow(
     Args:
         source_file: 左側(基準)となるデータのファイルパス。
         target_file: 右側(突合対象)となるデータのファイルパス。
-        source_key: source のマッチングに使用するキー名。
-        target_key: target のマッチングに使用するキー名。
+        match_keys: 突合キーの辞書。{"source": "key1", "target": "key2"}の形式。
+                   Noneの場合は自動推定を実行します（Hybrid Key-Specification Modelの核心）。
         output_dir: CSV 出力先ディレクトリ。
         numeric_field: 照合対象の数値フィールド名（source側）。
         target_numeric_field: 照合対象の数値フィールド名（target側）。Noneの場合はnumeric_fieldと同じ。
@@ -69,6 +69,11 @@ def generic_matching_workflow(
             "reconciled": "path/to/reconciled.csv",
             "unreconciled": "path/to/unreconciled.csv"
         }
+
+    Note:
+        この関数はHybrid Key-Specification Modelの核心実装です。
+        監督エージェントからmatch_keysが指定された場合はそれを使用し、
+        指定されていない場合は自動推定を実行します。
     """
 
     # target_numeric_field が指定されていない場合は numeric_field と同じにする
@@ -80,6 +85,25 @@ def generic_matching_workflow(
     # ------------------------------------------------------------------
     source_records = source_reader(source_file)
     target_records = target_reader(target_file)
+
+    # ------------------------------------------------------------------
+    # 1.5. キー決定ロジック（Hybrid Key-Specification Model の核心）
+    # ------------------------------------------------------------------
+    if match_keys is not None:
+        source_key = match_keys.get("source")
+        target_key = match_keys.get("target")
+
+        if not source_key or not target_key:
+            raise ValueError("match_keysが指定されている場合、sourceとtargetの両方が必要です")
+
+        print(f"指定されたキーを使用: source='{source_key}', target='{target_key}'")
+    else:
+        try:
+            print("突合キーが指定されていません。データから自動推定を実行します...")
+            source_key, target_key = infer_matching_keys(source_records, target_records)
+            print(f"自動推定されたキー: source='{source_key}', target='{target_key}'")
+        except Exception as e:
+            raise RuntimeError(f"キーの自動推定に失敗しました: {e}")
 
     # ------------------------------------------------------------------
     # 2. キー突合
